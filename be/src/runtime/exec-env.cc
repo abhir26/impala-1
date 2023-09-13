@@ -28,6 +28,7 @@
 #include "common/logging.h"
 #include "common/object-pool.h"
 #include "exec/kudu/kudu-util.h"
+#include "exprs/ai-functions.h"
 #include "kudu/rpc/service_if.h"
 #include "rpc/rpc-mgr.h"
 #include "runtime/bufferpool/buffer-pool.h"
@@ -151,6 +152,9 @@ DECLARE_int32(state_store_2_port);
 DECLARE_string(debug_actions);
 DECLARE_string(ssl_client_ca_certificate);
 
+DECLARE_string(ai_api_key_jceks_secret);
+DECLARE_string(ai_endpoint);
+
 DEFINE_int32(backend_client_connection_num_retries, 3, "Retry backend connections.");
 // When network is unstable, TCP will retry and sending could take longer time.
 // Choose 5 minutes as default timeout because we don't want RPC timeout be triggered
@@ -205,7 +209,6 @@ void SendClusterMembershipToFrontend(ClusterMembershipMgr::SnapshotPtr& snapshot
 }
 
 namespace impala {
-
 ExecEnv* ExecEnv::exec_env_ = nullptr;
 
 ExecEnv::ExecEnv(bool external_fe)
@@ -501,6 +504,32 @@ Status ExecEnv::Init() {
 
   RETURN_IF_ERROR(admission_controller_->Init());
   RETURN_IF_ERROR(InitHadoopConfig());
+
+  // If 'ai_api_key_jceks_secret' is set then extract the api_key and populate
+  // AIFunctions::ai_api_key_
+  if (frontend_ != nullptr && FLAGS_ai_api_key_jceks_secret != "") {
+    string api_key;
+    Status status =
+        frontend_->GetSecretFromKeyStore(FLAGS_ai_api_key_jceks_secret, &api_key);
+    if (!status.ok()) {
+      LOG(ERROR) << "Failed to get secret from keystore, err: " << status.msg().msg();
+    } else {
+      AiFunctions::set_api_key(api_key);
+    }
+  }
+
+  // Validate ai_endpoint
+  if (FLAGS_ai_endpoint != "") {
+    if (!AiFunctions::is_api_endpoint_valid(FLAGS_ai_endpoint)) {
+      LOG(ERROR) << "Config 'ai_endpoint' (" << FLAGS_ai_endpoint << ") is invalid"
+                 << " err: " << AiFunctions::AI_GENERATE_TXT_INVALID_PROTOCOL_ERROR;
+      FLAGS_ai_endpoint = "";
+    } else if (!AiFunctions::is_api_endpoint_supported(FLAGS_ai_endpoint)) {
+      LOG(ERROR) << "Config 'ai_endpoint' (" << FLAGS_ai_endpoint << ") is unsupported"
+                 << " err: " << AiFunctions::AI_GENERATE_TXT_UNSUPPORTED_ENDPOINT_ERROR;
+      FLAGS_ai_endpoint = "";
+    }
+  }
   return Status::OK();
 }
 

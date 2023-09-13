@@ -34,6 +34,7 @@
 #include "codegen/llvm-codegen.h"
 #include "common/init.h"
 #include "common/object-pool.h"
+#include "exprs/ai-functions.h"
 #include "exprs/anyval-util.h"
 #include "exprs/is-null-predicate.h"
 #include "exprs/like-predicate.h"
@@ -82,6 +83,8 @@
 DECLARE_bool(abort_on_config_error);
 DECLARE_bool(disable_optimization_passes);
 DECLARE_string(hdfs_zone_info_zip);
+DECLARE_string(ai_endpoint);
+DECLARE_string(ai_model);
 
 namespace posix_time = boost::posix_time;
 using boost::bad_lexical_cast;
@@ -11196,6 +11199,119 @@ TEST_P(ExprTest, Utf8Test) {
   TestStringValue("btrim('👨‍👩‍👧‍👦', '👧‍👦')", "👨‍👩");
 
   executor_->PopExecOption();
+}
+
+TEST_P(ExprTest, AiFunctionsTest) {
+  // Hack up a function context.
+  RuntimeState state(TQueryCtx(), ExecEnv::GetInstance());
+  MemTracker m;
+  MemPool pool(&m);
+  FunctionContext::TypeDesc str_desc;
+  str_desc.type = FunctionContext::Type::TYPE_STRING;
+  std::vector<FunctionContext::TypeDesc> v(3, str_desc);
+  FunctionContext* ctx = CreateUdfTestContext(str_desc, v, &state, &pool);
+  // dummy api key.
+  string secret_key("do_not_share");
+  AiFunctions::set_api_key(secret_key);
+  // valid endpoint
+  StringVal openai_endpoint("https://openai.azure.com");
+  // empty jceks secret key
+  StringVal jceks_secret("");
+  // dummy model.
+  StringVal model("bot");
+  // prompt message.
+  StringVal prompt("hello!");
+  // additional params
+  StringVal json_params;
+  // dry_run to receive HTTP request header and body
+  bool dry_run = true;
+
+  // Test endpoints.
+  // endpoints must begin with https.
+  StringVal result = AiFunctions::AiGenerateTextInternal(
+      ctx, StringVal("http://ai.com"), prompt, model, jceks_secret, json_params, dry_run);
+  EXPECT_EQ(string(reinterpret_cast<char*>(result.ptr), result.len),
+      AiFunctions::AI_GENERATE_TXT_INVALID_PROTOCOL_ERROR);
+  // only OpenAI endpoints are supported.
+  result = AiFunctions::AiGenerateTextInternal(
+      ctx, StringVal("https://ai.com"), prompt, model, jceks_secret, json_params, dry_run);
+  EXPECT_EQ(string(reinterpret_cast<char*>(result.ptr), result.len),
+      AiFunctions::AI_GENERATE_TXT_UNSUPPORTED_ENDPOINT_ERROR);
+  // valid request using OpenAI endpoint.
+  result = AiFunctions::AiGenerateTextInternal(
+      ctx, openai_endpoint, prompt, model, jceks_secret, json_params, dry_run);
+  EXPECT_EQ(string(reinterpret_cast<char*>(result.ptr), result.len),
+      string("https://openai.azure.com"
+             "\nContent-Type: application/json"
+             "\nAuthorization: Bearer do_not_share"
+             "\n{\"model\":\"bot\",\"messages\":[{\"role\":\"user\",\"content\":\"hello!"
+             "\"}]}"));
+
+  // Test prompt.
+  // prompt cannot be empty.
+  StringVal invalid_prompt("");
+  result = AiFunctions::AiGenerateTextInternal(
+      ctx, openai_endpoint, invalid_prompt, model, jceks_secret, json_params, dry_run);
+  EXPECT_EQ(string(reinterpret_cast<char*>(result.ptr), result.len),
+      AiFunctions::AI_GENERATE_TXT_INVALID_PROMPT_ERROR);
+  // prompt cannot be null.
+  invalid_prompt = StringVal::null();
+  result = AiFunctions::AiGenerateTextInternal(
+      ctx, openai_endpoint, invalid_prompt, model, jceks_secret, json_params, dry_run);
+  EXPECT_EQ(string(reinterpret_cast<char*>(result.ptr), result.len),
+      AiFunctions::AI_GENERATE_TXT_INVALID_PROMPT_ERROR);
+
+  // Test override/additional params
+  // invalid json results in error.
+  StringVal invalid_json_params("{\"temperature\": 0.49, \"stop\": [\"*\",::,]}");
+  result = AiFunctions::AiGenerateTextInternal(
+      ctx, openai_endpoint, prompt, model, jceks_secret, invalid_json_params, dry_run);
+  EXPECT_EQ(string(reinterpret_cast<char*>(result.ptr), result.len),
+      AiFunctions::AI_GENERATE_TXT_JSON_PARSE_ERROR);
+  // valid json results in overriding existing params ('model'), and adding new parms
+  // like 'temperature' and 'stop'.
+  StringVal valid_json_params(
+      "{\"model\": \"gpt\", \"temperature\": 0.49, \"stop\": [\"*\", \"%\"]}");
+  result = AiFunctions::AiGenerateTextInternal(
+      ctx, openai_endpoint, prompt, model, jceks_secret, valid_json_params, dry_run);
+  EXPECT_EQ(string(reinterpret_cast<char*>(result.ptr), result.len),
+      string("https://openai.azure.com"
+             "\nContent-Type: application/json"
+             "\nAuthorization: Bearer do_not_share"
+             "\n{\"model\":\"gpt\",\"messages\":[{\"role\":\"user\",\"content\":\"hello!"
+             "\"}],\"temperature\":0.49,\"stop\":[\"*\",\"%\"]}"));
+  // messages cannot be overriden, as they we constructed from the prompt.
+  StringVal forbidden_override(
+      "{\"messages\": [{\"role\":\"system\",\"content\":\"howdy!\"}]}");
+  result = AiFunctions::AiGenerateTextInternal(
+      ctx, openai_endpoint, prompt, model, jceks_secret, forbidden_override, dry_run);
+  EXPECT_EQ(string(reinterpret_cast<char*>(result.ptr), result.len),
+      AiFunctions::AI_GENERATE_TXT_MSG_OVERRIDE_FORBIDDEN_ERROR);
+
+  // Test flag file options are used when input is empty/null
+  FLAGS_ai_endpoint = "https://api.openai.com";
+  FLAGS_ai_model = "gpt";
+  result = AiFunctions::AiGenerateTextInternal(
+      ctx, StringVal::null(), prompt, StringVal::null(), jceks_secret, json_params, dry_run);
+  EXPECT_EQ(string(reinterpret_cast<char*>(result.ptr), result.len),
+      string("https://api.openai.com"
+             "\nContent-Type: application/json"
+             "\nAuthorization: Bearer do_not_share"
+             "\n{\"model\":\"gpt\",\"messages\":[{\"role\":\"user\",\"content\":\"hello!"
+             "\"}]}"));
+  result = AiFunctions::AiGenerateTextInternal(
+      ctx, StringVal(""), prompt, StringVal(""), jceks_secret, json_params, dry_run);
+  EXPECT_EQ(string(reinterpret_cast<char*>(result.ptr), result.len),
+      string("https://api.openai.com"
+             "\nContent-Type: application/json"
+             "\nAuthorization: Bearer do_not_share"
+             "\n{\"model\":\"gpt\",\"messages\":[{\"role\":\"user\",\"content\":\"hello!"
+             "\"}]}"));
+
+  // resource cleanup
+  pool.FreeAll();
+  UdfTestHarness::CloseContext(ctx);
+  state.ReleaseResources();
 }
 
 } // namespace impala

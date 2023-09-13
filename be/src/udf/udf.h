@@ -61,6 +61,20 @@ struct BigIntVal;
 struct StringVal;
 struct TimestampVal;
 struct DateVal;
+class FunctionContext;
+
+/// Built-in functions exposed to UDFs
+struct BuiltInFunctions {
+ public:
+  /// Sends a prompt to the default endpoint and uses the default model, default
+  /// jceks api-key secret and default params.
+  StringVal (*ai_generate_text)(FunctionContext* context, const StringVal& prompt);
+  /// Sends a prompt to the input AI endpoint using the input model, jceks api_key secret
+  /// and optional params.
+  //StringVal ai_generate_text(const StringVal& endpoint, const StringVal& prompt,
+  //    const StringVal& model, const StringVal& api_key_jceks_secret,
+  //    const StringVal& params) const;
+};
 
 /// A FunctionContext is passed to every UDF/UDA and is the interface for the UDF to the
 /// rest of the system. It contains APIs to examine the system state, report errors and
@@ -245,6 +259,8 @@ class FunctionContext {
   /// Returns the underlying opaque implementation object. The UDF/UDA should not
   /// use this. This is used internally.
   impala::FunctionContextImpl* impl() const { return impl_; }
+
+  const BuiltInFunctions* Functions() const;
 
   ~FunctionContext();
 
@@ -739,7 +755,6 @@ struct DecimalVal : public impala_udf::AnyVal {
 };
 
 typedef uint8_t* BufferVal;
-
 }
 
 #endif

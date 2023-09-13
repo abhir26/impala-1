@@ -139,7 +139,8 @@ Frontend::Frontend() {
     {"validateSaml2Response", "([B)[B", &validate_saml2_response_id_},
     {"validateSaml2Bearer", "([B)Ljava/lang/String;", &validate_saml2_bearer_id_},
     {"abortKuduTransaction", "([B)V", &abort_kudu_txn_},
-    {"commitKuduTransaction", "([B)V", &commit_kudu_txn_}
+    {"commitKuduTransaction", "([B)V", &commit_kudu_txn_},
+    {"getSecretFromKeyStore", "([B)Ljava/lang/String;", &get_secret_from_key_store_}
   };
 
   JNIEnv* jni_env = JniUtil::GetJNIEnv();
@@ -393,4 +394,10 @@ Status Frontend::CommitKuduTransaction(const TUniqueId& query_id) {
 
 Status Frontend::Convert(const TExecRequest& request) {
   return JniUtil::CallJniMethod(fe_, convertTable, request);
+}
+
+Status Frontend::GetSecretFromKeyStore(const string& secret_key, string* secret) {
+  TStringLiteral secret_key_t;
+  secret_key_t.__set_value(secret_key);
+  return JniUtil::CallJniMethod(fe_, get_secret_from_key_store_, secret_key_t, secret);
 }

@@ -93,6 +93,7 @@ import org.apache.impala.thrift.TShowGrantPrincipalParams;
 import org.apache.impala.thrift.TShowRolesParams;
 import org.apache.impala.thrift.TShowStatsOp;
 import org.apache.impala.thrift.TShowStatsParams;
+import org.apache.impala.thrift.TStringLiteral;
 import org.apache.impala.thrift.TDescribeHistoryParams;
 import org.apache.impala.thrift.TTableName;
 import org.apache.impala.thrift.TUniqueId;
@@ -767,6 +768,19 @@ public class JniFrontend {
     } catch (TException e) {
       throw new InternalException(e.getMessage());
     }
+  }
+
+  public String getSecretFromKeyStore(byte[] secretKeyRequest) throws ImpalaException {
+    final TStringLiteral secretKey = new TStringLiteral();
+    JniUtil.deserializeThrift(protocolFactory_, secretKey, secretKeyRequest);
+    String secret = new String();
+    try {
+      char[] secretCharArray = CONF.getPassword(secretKey.getValue());
+      if (secretCharArray != null) { secret = new String(secretCharArray); }
+    } catch (IOException e) {
+      LOG.error("Failed to get password from keystore, error: " + e);
+    }
+    return secret;
   }
 
   public String validateSaml2Bearer(byte[] serializedRequest) throws ImpalaException{
